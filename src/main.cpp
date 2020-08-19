@@ -25,6 +25,7 @@ Data Stack size     : 16
 #include <avr/interrupt.h>
 #include <util/delay.h>
 #include <avr/eeprom.h>
+#include <avr/sleep.h>
 
 #define ADC_VREF_TYPE 0x00
 #define U12V 0xDC
@@ -44,7 +45,7 @@ Data Stack size     : 16
 
 #ifdef SLOW_PWM
 #define DELAY_TIMER_NORMAL 2            // 2 * 0,0068 = 0.0136s timer * 255 = 3,468 sec
-#define DELAY_TIMER_MODE_OFF 4          // 6,936 sec
+#define DELAY_TIMER_MODE_OFF 4          // 4 * 0,0068 * 255 = 6,936 sec
 #define DELAY_OFF_IF_DOOR_IS_OPEN 44000 // * 0.0136s sek = 10min
 #define DELAY_ON_TIME 368               // * 0,0136 = 5 sec
 #define DELAY_BLINKER 18                // * 0,0136 = 0,25 sec
@@ -176,7 +177,8 @@ ISR(TIM0_OVF_vect)
     buttonPressed = 0;
   }
 
-  // переход к гашению, если дверь закрыта, напряжение больше порога паузы и находимся не в режиме ожидания
+  // переход к гашению, если дверь закрыта, напряжение больше порога паузы
+  // и находимся в режимах MODE_ON, MODE_SOFT_START, MODE_WAIT_BEFORE_OFF
   if ((mode == MODE_ON || mode == MODE_SOFT_START || mode == MODE_WAIT_BEFORE_OFF) && DOOR_CLOSED && (read_adc(1) > (U12V + eeprom_read_byte(&eeMultU) * 5)))
   {
     mode = MODE_SOFT_OFF;
@@ -226,7 +228,7 @@ ISR(TIM0_OVF_vect)
       }
       else
       {
-        mode = setupMode;
+        mode = (setupMode == MODE_ON) ? MODE_SOFT_START : setupMode;
         counter2 = 0;
       }
     }
@@ -240,9 +242,9 @@ ISR(TIM0_OVF_vect)
     break;
   case MODE_SOFT_START: //зажигаем
     TCCR0A = 0x83;      //Подключаем вывод ШИМа
-    if (OCR0A < 255)    //Пока значение ШИМа меньше 255
+    if (OCR0A < 254)    //Пока значение ШИМа меньше 255
     {
-      OCR0A++; //увеличиваем его
+      OCR0A = OCR0A + 2; //увеличиваем его
     }
     else
     {
@@ -300,15 +302,17 @@ int main(void)
   // Declare your local variables here
 
   // Crystal Oscillator division factor: 1
-  CLKPR = 0x80;
-  CLKPR = 0x00;
+  CLKPR=(1<<CLKPCE);
+  CLKPR=(0<<CLKPCE) | (0<<CLKPS3) | (0<<CLKPS2) | (0<<CLKPS1) | (0<<CLKPS0);
 
   // Input/Output Ports initialization
   // Port B initialization
   // Func5=In Func4=In Func3=In Func2=In Func1=In Func0=Out
+  DDRB=(0<<DDB5) | (0<<DDB4) | (0<<DDB3) | (0<<DDB2) | (0<<DDB1) | (1<<DDB0);
   // State5=T State4=P State3=P State2=T State1=P State0=0
-  PORTB = 0x1A;
-  DDRB = 0x01;
+  PORTB=(0<<PORTB5) | (1<<PORTB4) | (1<<PORTB3) | (0<<PORTB2) | (1<<PORTB1) | (0<<PORTB0);
+  //PORTB = 0x1A;
+  //DDRB = 0x01;
 
 #ifdef SLOW_PWM
   // Timer/Counter 0 initialization
@@ -320,8 +324,10 @@ int main(void)
   // Timer Period: 6,8267 ms
   // Output Pulse(s):
   // OC0A Period: 6,8267 ms Width: 0 us
-  TCCR0A = 0x03;
-  TCCR0B = 0x04;
+  TCCR0A=(0<<COM0A1) | (0<<COM0A0) | (0<<COM0B1) | (0<<COM0B0) | (1<<WGM01) | (1<<WGM00);
+  TCCR0B=(0<<WGM02) | (1<<CS02) | (0<<CS01) | (0<<CS00);
+  //TCCR0A = 0x03;
+  //TCCR0B = 0x04;
 #else
   // Timer/Counter 0 initialization
   // Clock source: System Clock
@@ -329,8 +335,10 @@ int main(void)
   // Mode: Fast PWM top=FFh
   // OC0A output: Non-Inverted PWM
   // OC0B output: Disconnected
-  TCCR0A = 0x03;
-  TCCR0B = 0x01;
+  TCCR0A=(0<<COM0A1) | (0<<COM0A0) | (0<<COM0B1) | (0<<COM0B0) | (1<<WGM01) | (1<<WGM00);
+  TCCR0B=(0<<WGM02) | (0<<CS02) | (0<<CS01) | (1<<CS00);
+  //TCCR0A = 0x03;
+  //TCCR0B = 0x01;
 #endif
   //TCNT0=0x00;
   //OCR0A=0x00;
@@ -339,13 +347,23 @@ int main(void)
   // External Interrupt(s) initialization
   // INT0: Off
   // Interrupt on any change on pins PCINT0-5: On
-  GIMSK = 0x20;
-  MCUCR = 0x30; //Sleep enabled. Power-down mod
-  PCMSK = 0x12; //Pin Change interupt on PIN.1, PIN.4
-  GIFR = 0x20;
+  GIMSK=(0<<INT0) | (1<<PCIE);
+  //GIMSK = 0x20;
+
+  //Sleep enabled. Power-down mod
+  MCUCR=(1<<SE) | (1<<SM1) | (0<<ISC01) | (0<<ISC00);
+  //MCUCR = 0x30; 
+
+  //Pin Change interupt on PIN.1, PIN.4
+  PCMSK = (1<<PCINT4) | (1<<PCINT1);
+  //PCMSK = 0x12; 
+  
+  GIFR = (1<<PCIF);
+  //GIFR = 0x20;
 
   // Timer/Counter 0 Interrupt(s) initialization
-  TIMSK0 = 0x02;
+  TIMSK0=(0<<OCIE0B) | (0<<OCIE0A) | (1<<TOIE0);
+  //TIMSK0 = 0x02;
 
   // Analog Comparator initialization
   // Analog Comparator: Off
@@ -369,15 +387,15 @@ int main(void)
   //SafeShutdown = 0;
 
   // Global enable interrupts
-  asm("sei");
+  sei();
 
   while (1)
   {
     // Place your code here
     if (GoToSleep)
     {
-      asm("sei");
-      asm("sleep");
+      sei();
+      sleep_cpu();
     }
   };
 }
