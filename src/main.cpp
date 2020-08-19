@@ -86,7 +86,7 @@ unsigned char GoToSleep;
 unsigned char SafeShutdown;
 
 // Read the AD conversion result
-unsigned int read_adc(unsigned char adc_input)
+int read_adc(unsigned char adc_input)
 {
   ADMUX = adc_input | (ADC_VREF_TYPE & 0xff);
   // Delay needed for the stabilization of the ADC input voltage
@@ -170,8 +170,22 @@ ISR(TIM0_OVF_vect)
         mode = MODE_SETUP;
       }
     }
+  }
+  else
+  {
+    buttonPressed = 0;
+  }
 
-    if (mode == MODE_SETUP)
+  // переход к гашению, если дверь закрыта, напряжение больше порога паузы и находимся не в режиме ожидания
+  if ((mode == MODE_ON || mode == MODE_SOFT_START || mode == MODE_WAIT_BEFORE_OFF) && DOOR_CLOSED && (read_adc(1) > (U12V + eeprom_read_byte(&eeMultU) * 5)))
+  {
+    mode = MODE_SOFT_OFF;
+  }
+
+  switch (mode)
+  {
+  case MODE_SETUP:
+    if (BUTTON)
     {
       if (blinker <= max_blink)
       {
@@ -185,10 +199,7 @@ ISR(TIM0_OVF_vect)
         blinker = 0;
       }
     }
-  }
-  else
-  {
-    if (mode == MODE_SETUP)
+    else
     {
       if (blinker > 0)
       {
@@ -205,7 +216,8 @@ ISR(TIM0_OVF_vect)
       OCR0A = 0;
       mode = MODE_SETUP_OK;
     }
-
+    break;
+  case MODE_SETUP_OK:
     if (mode == MODE_SETUP_OK)
     {
       if (blinker < 3)
@@ -218,15 +230,7 @@ ISR(TIM0_OVF_vect)
         counter2 = 0;
       }
     }
-
-    buttonPressed = 0;
-  }
-
-  //читаем напряжение на входе, вычисляем напряжение, при котором не надо ждать ПАУЗУ до гашения
-  bool voltageThreshold = read_adc(1) >  (U12V + eeprom_read_byte(&eeMultU) * 5);
-
-  switch (mode)
-  {
+    break;
   case MODE_STANDBY: //выключено - ждём.
     OCR0A = 0;       //ШИМ в ноль
     TCCR0A = 0x03;   //Отключаем вывод ШИМа.
@@ -236,11 +240,7 @@ ISR(TIM0_OVF_vect)
     break;
   case MODE_SOFT_START: //зажигаем
     TCCR0A = 0x83;      //Подключаем вывод ШИМа
-    if (DOOR_CLOSED && voltageThreshold)
-    {
-      mode = MODE_SOFT_OFF;
-    }
-    else if (OCR0A < 255) //Пока значение ШИМа меньше 255
+    if (OCR0A < 255)    //Пока значение ШИМа меньше 255
     {
       OCR0A++; //увеличиваем его
     }
@@ -261,15 +261,8 @@ ISR(TIM0_OVF_vect)
 
     if (DOOR_CLOSED) //если двери закрылись...
     {
-      if (voltageThreshold) //..и напряжение бортсети больше порогового, то
-      {
-        mode = MODE_SOFT_OFF; //сразу переходим к гашению
-      }
-      else
-      {
-        mode = MODE_WAIT_BEFORE_OFF; //иначе переходим к паузе.
-        counter2 = 0;
-      }
+      mode = MODE_WAIT_BEFORE_OFF; //переходим к паузе.
+      counter2 = 0;
     }
 
     break;
@@ -280,10 +273,6 @@ ISR(TIM0_OVF_vect)
     if (!DOOR_CLOSED)
       mode = MODE_ON;
 
-    if (DOOR_CLOSED && voltageThreshold)
-    {
-      mode = MODE_SOFT_OFF;
-    }
     break;
   case MODE_SOFT_OFF: //тушим
     if (OCR0A > 0)
