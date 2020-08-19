@@ -149,28 +149,10 @@ void blink(unsigned int delay)
 ISR(TIM0_OVF_vect)
 {
   // Place your code here
-  unsigned int iVoltage;
-  unsigned int iLevelOff;
-  unsigned int delay;
 
-  if (mode == MODE_SOFT_OFF)
-  {
-    delay = DELAY_TIMER_MODE_OFF; //это шоб чуть плавнее гасло...
-  }
-  else
-  {
-    delay = DELAY_TIMER_NORMAL;
-  }
-
-  counter++;
-  if (counter < delay)
-  {
+  if (counter++ < (mode == MODE_SOFT_OFF ? DELAY_TIMER_MODE_OFF : DELAY_TIMER_NORMAL))
     return;
-  }
-  else
-  {
-    counter = 0;
-  }
+  counter = 0;
 
   if (BUTTON)
   {
@@ -240,8 +222,8 @@ ISR(TIM0_OVF_vect)
     buttonPressed = 0;
   }
 
-  iVoltage = read_adc(1);                            //читаем напряжение на входе
-  iLevelOff = U12V + eeprom_read_byte(&eeMultU) * 5; //вычисляем напряжение, при котором не надо ждать ПАУЗУ до гашения
+  //читаем напряжение на входе, вычисляем напряжение, при котором не надо ждать ПАУЗУ до гашения
+  bool voltageThreshold = read_adc(1) >  (U12V + eeprom_read_byte(&eeMultU) * 5);
 
   switch (mode)
   {
@@ -254,7 +236,7 @@ ISR(TIM0_OVF_vect)
     break;
   case MODE_SOFT_START: //зажигаем
     TCCR0A = 0x83;      //Подключаем вывод ШИМа
-    if (DOOR_CLOSED && (iVoltage > iLevelOff))
+    if (DOOR_CLOSED && voltageThreshold)
     {
       mode = MODE_SOFT_OFF;
     }
@@ -279,7 +261,7 @@ ISR(TIM0_OVF_vect)
 
     if (DOOR_CLOSED) //если двери закрылись...
     {
-      if (iVoltage > iLevelOff) //..и напряжение бортсети больше порогового, то
+      if (voltageThreshold) //..и напряжение бортсети больше порогового, то
       {
         mode = MODE_SOFT_OFF; //сразу переходим к гашению
       }
@@ -298,7 +280,7 @@ ISR(TIM0_OVF_vect)
     if (!DOOR_CLOSED)
       mode = MODE_ON;
 
-    if (DOOR_CLOSED && iVoltage > iLevelOff)
+    if (DOOR_CLOSED && voltageThreshold)
     {
       mode = MODE_SOFT_OFF;
     }
