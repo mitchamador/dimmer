@@ -36,6 +36,7 @@ Data Stack size     : 16
 14.0 = 0x00FC // 252
 */
 
+
 // default pwm frequency is (9,6MHz / 255 (Top Timer0) = 37,65 khz
 // 0,0000265625s timer overflow
 
@@ -44,16 +45,16 @@ Data Stack size     : 16
 #define SLOW_PWM
 
 #ifdef SLOW_PWM
-#define DELAY_TIMER_NORMAL 2            // 2 * 0,0068 = 0.0136s timer * 255 = 3,468 sec
-#define DELAY_TIMER_MODE_OFF 4          // 4 * 0,0068 * 255 = 6,936 sec
+#define DELAY_TIMER_NORMAL 2            // 2 * 0,0068 = 0.0136s timer ; on time = 0.0136s * 255 = 3,468 sec
+#define DELAY_TIMER_MODE_OFF 4          // off time = 4 * 0,0068 * 255 = 6,936 sec
 #define DELAY_OFF_IF_DOOR_IS_OPEN 44000 // * 0.0136s sek = 10min
 #define DELAY_ON_TIME 368               // * 0,0136 = 5 sec
 #define DELAY_BLINKER 18                // * 0,0136 = 0,25 sec
 #define DELAY_BLINKER_PAUSE 220         // * 0,0136 = 3 sec
 #define DELAY_BUTTON_PRESSED 74         // * 0,0136 = 1 sec
 #else
-#define DELAY_TIMER_NORMAL 376          // 376 * 0,0000265625 = 0.01s timer * 255 = 2,55 sec
-#define DELAY_TIMER_MODE_OFF 1000       // 6,77 sec
+#define DELAY_TIMER_NORMAL 376          // 376 * 0,0000265625 = 0.01s timer ; on time = 0.01 * 255 = 2,55 sec
+#define DELAY_TIMER_MODE_OFF 1000       // off time = 1000 * 0,0000265625 * 255 = 6,77 sec
 #define DELAY_OFF_IF_DOOR_IS_OPEN 60000 // * 0.01 sek = 10min
 #define DELAY_ON_TIME 500               // * 0,01 = 5 sec
 #define DELAY_BLINKER 25                // * 0,01 = 0,25 sec
@@ -61,6 +62,11 @@ Data Stack size     : 16
 #define DELAY_BLINKER_PAUSE 300         // * 0,01 = 3 sec
 #define DELAY_BUTTON_PRESSED 100        // * 0,01 = 1 sec
 #endif
+
+// soft on time when voltage threshold reached is 127 * timer (or 255 * timer when not defined)
+#define FASTER_SOFT_ON_VOLTAGE_THRESHOLD
+// soft off time when voltage threshold reached is timer * DELAY_TIMER_NORMAL (or timer * DELAY_TIMER_MODE_OFF when not defined)
+#define FASTER_SOFT_OFF_VOLTAGE_THRESHOLD
 
 #define BUTTON (!(PINB & _BV(PB4)))   //кнопка
 #define DOOR_CLOSED (PINB & _BV(PB1)) //концевик двери
@@ -137,21 +143,29 @@ void blink(unsigned int delay)
 
   if (OCR0A == 0)
   {
+    TCCR0A = 0x83;
     OCR0A = 255;
   }
   else
   {
     blinker++;
+    TCCR0A = 0x03;
     OCR0A = 0;
   }
 }
+
+bool voltageThreshold;
 
 // Timer 0 overflow interrupt service routine
 ISR(TIM0_OVF_vect)
 {
   // Place your code here
 
+#ifdef FASTER_SOFT_OFF_VOLTAGE_THRESHOLD
+  if (counter++ < ((mode == MODE_SOFT_OFF && !voltageThreshold) ? DELAY_TIMER_MODE_OFF : DELAY_TIMER_NORMAL))
+#else
   if (counter++ < (mode == MODE_SOFT_OFF ? DELAY_TIMER_MODE_OFF : DELAY_TIMER_NORMAL))
+#endif
     return;
   counter = 0;
 
@@ -165,7 +179,7 @@ ISR(TIM0_OVF_vect)
         setupMode = mode;
         blinker = 0;
         max_blink = setupMode == MODE_STANDBY ? 6 : 12;
-        TCCR0A = 0x83;
+        TCCR0A = 0x03;
         OCR0A = 0;
         counter2 = 0;
         mode = MODE_SETUP;
@@ -178,8 +192,10 @@ ISR(TIM0_OVF_vect)
   }
 
   // переход к гашению, если дверь закрыта, напряжение больше порога паузы
+  voltageThreshold = read_adc(1) > U12V + eeprom_read_byte(&eeMultU) * 5;
+
   // и находимся в режимах MODE_ON, MODE_SOFT_START, MODE_WAIT_BEFORE_OFF
-  if ((mode == MODE_ON || mode == MODE_SOFT_START || mode == MODE_WAIT_BEFORE_OFF) && DOOR_CLOSED && (read_adc(1) > (U12V + eeprom_read_byte(&eeMultU) * 5)))
+  if ((mode == MODE_ON || mode == MODE_SOFT_START || mode == MODE_WAIT_BEFORE_OFF) && DOOR_CLOSED && voltageThreshold)
   {
     mode = MODE_SOFT_OFF;
   }
@@ -244,7 +260,11 @@ ISR(TIM0_OVF_vect)
     TCCR0A = 0x83;      //Подключаем вывод ШИМа
     if (OCR0A < 254)    //Пока значение ШИМа меньше 255
     {
-      OCR0A = OCR0A + 2; //увеличиваем его
+#ifdef FASTER_SOFT_ON_VOLTAGE_THRESHOLD
+      OCR0A = OCR0A + (voltageThreshold ? 2 : 1); //увеличиваем его
+#else
+      OCR0A++; //увеличиваем его
+#endif
     }
     else
     {
