@@ -258,14 +258,17 @@ ISR(TIM0_OVF_vect)
     break;
   case MODE_SOFT_START: //зажигаем
     TCCR0A = 0x83;      //Подключаем вывод ШИМа
+#ifdef FASTER_SOFT_ON_VOLTAGE_THRESHOLD
     if (OCR0A < 254)    //Пока значение ШИМа меньше 255
     {
-#ifdef FASTER_SOFT_ON_VOLTAGE_THRESHOLD
       OCR0A = OCR0A + (voltageThreshold ? 2 : 1); //увеличиваем его
-#else
-      OCR0A++; //увеличиваем его
-#endif
     }
+#else
+    if (OCR0A < 255)    //Пока значение ШИМа меньше 255
+    {
+      OCR0A++; //увеличиваем его
+    }
+#endif
     else
     {
       mode = MODE_ON; //когда добрались до верха (255), то значить лампа полностью включилась и переходим в режим "включено"
