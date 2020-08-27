@@ -8,4 +8,6 @@ src/main.exe
 .vscode/extensions.json
 .vscode/tasks.json
 .travis.yml
-dimmer.code-workspace
+*.code-workspace
+proteus/*.pdsbak
+proteus/*.workspace
