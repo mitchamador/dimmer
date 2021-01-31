@@ -14,7 +14,7 @@ Comments:
 
 
 Chip type           : ATtiny13
-Clock frequency     : 9,600000 MHz
+Clock frequency     : 1,200000 MHz
 Memory model        : Tiny
 External SRAM size  : 0            
 Data Stack size     : 16
@@ -36,32 +36,16 @@ Data Stack size     : 16
 14.0 = 0x00FC // 252
 */
 
+// default pwm frequency is (1,2MHz / 255 (Top Timer0) = 4,7khz
+// 0,0002133s timer overflow
 
-// default pwm frequency is (9,6MHz / 255 (Top Timer0) = 37,65 khz
-// 0,0000265625s timer overflow
-
-// when defined use (37500kHz / 255 (Top Timer0) = 146,5hz pwm
-// 0,0068s timer overflow
-#define SLOW_PWM
-
-#ifdef SLOW_PWM
-#define DELAY_TIMER_NORMAL 2            // 2 * 0,0068 = 0.0136s timer ; on time = 0.0136s * 255 = 3,468 sec
-#define DELAY_TIMER_MODE_OFF 4          // off time = 4 * 0,0068 * 255 = 6,936 sec
-#define DELAY_OFF_IF_DOOR_IS_OPEN 44000 // * 0.0136s sek = 10min
-#define DELAY_ON_TIME 368               // * 0,0136 = 5 sec
-#define DELAY_BLINKER 18                // * 0,0136 = 0,25 sec
-#define DELAY_BLINKER_PAUSE 220         // * 0,0136 = 3 sec
-#define DELAY_BUTTON_PRESSED 74         // * 0,0136 = 1 sec
-#else
-#define DELAY_TIMER_NORMAL 376          // 376 * 0,0000265625 = 0.01s timer ; on time = 0.01 * 255 = 2,55 sec
-#define DELAY_TIMER_MODE_OFF 1000       // off time = 1000 * 0,0000265625 * 255 = 6,77 sec
-#define DELAY_OFF_IF_DOOR_IS_OPEN 60000 // * 0.01 sek = 10min
-#define DELAY_ON_TIME 500               // * 0,01 = 5 sec
-#define DELAY_BLINKER 25                // * 0,01 = 0,25 sec
-#define DELAY_BLINKER 25                // * 0,01 = 0,25 sec
-#define DELAY_BLINKER_PAUSE 300         // * 0,01 = 3 sec
-#define DELAY_BUTTON_PRESSED 100        // * 0,01 = 1 sec
-#endif
+#define DELAY_TIMER_NORMAL 47          // 47 * 0,0002133 = 0.01003s timer ; on time = 0.01003 * 255 = 2,56 sec
+#define DELAY_TIMER_MODE_OFF 125       // off time = 125 * 0.01003 * 255 = 6,8 sec
+#define DELAY_OFF_IF_DOOR_IS_OPEN 60000 // * 0.01003 sek = 10min
+#define DELAY_ON_TIME 500               // * 0.01003 = 5 sec
+#define DELAY_BLINKER 25                // * 0.01003 = 0,25 sec
+#define DELAY_BLINKER_PAUSE 300         // * 0.01003 = 3 sec
+#define DELAY_BUTTON_PRESSED 100        // * 0.01003 = 1 sec
 
 // soft on time when voltage threshold reached is 127 * timer (or 255 * timer when not defined)
 #define FASTER_SOFT_ON_VOLTAGE_THRESHOLD
@@ -87,10 +71,11 @@ EEMEM unsigned char eeOnTime5s = 2;
 
 tModeInfo mode;
 
-unsigned int counter;
+unsigned char counter;
 unsigned int counter2;
-unsigned char GoToSleep;
 unsigned char SafeShutdown;
+
+volatile unsigned char GoToSleep;
 
 // Read the AD conversion result
 int read_adc(unsigned char adc_input)
@@ -183,6 +168,8 @@ ISR(TIM0_OVF_vect)
         OCR0A = 0;
         counter2 = 0;
         mode = MODE_SETUP;
+      } else {
+        return;
       }
     }
   }
@@ -236,24 +223,24 @@ ISR(TIM0_OVF_vect)
     }
     break;
   case MODE_SETUP_OK:
-    if (mode == MODE_SETUP_OK)
+    if (blinker < 3)
     {
-      if (blinker < 3)
-      {
-        blink(DELAY_BLINKER);
-      }
-      else
-      {
-        mode = (setupMode == MODE_ON) ? MODE_SOFT_START : setupMode;
-        counter2 = 0;
-      }
+      blink(DELAY_BLINKER);
+    }
+    else
+    {
+      mode = (setupMode == MODE_ON) ? MODE_SOFT_START : setupMode;
+      //mode = setupMode;
+      //if (mode == MODE_ON) {
+      //  TCCR0A = 0x83;      //Подключаем вывод ШИМа
+      //}
+      counter2 = 0;
     }
     break;
   case MODE_STANDBY: //выключено - ждём.
     OCR0A = 0;       //ШИМ в ноль
     TCCR0A = 0x03;   //Отключаем вывод ШИМа.
     SafeShutdown = 0;
-
     GoToSleep = 1; //можно идти спать.
     break;
   case MODE_SOFT_START: //зажигаем
@@ -276,9 +263,9 @@ ISR(TIM0_OVF_vect)
     }
     break;
   case MODE_ON: //включено
+    //TCCR0A = 0x83;      //Подключаем вывод ШИМа
     OCR0A = 255;
-    counter2++;
-    if (counter2 > DELAY_OFF_IF_DOOR_IS_OPEN) //если дверь открыта слишком долго, то
+    if (++counter2 > DELAY_OFF_IF_DOOR_IS_OPEN) //если дверь открыта слишком долго, то
     {
       SafeShutdown = 1;
       mode = MODE_SOFT_OFF; //переходим к гашению...
@@ -325,8 +312,8 @@ int main(void)
   // Declare your local variables here
 
   // Crystal Oscillator division factor: 1
-  CLKPR=(1<<CLKPCE);
-  CLKPR=(0<<CLKPCE) | (0<<CLKPS3) | (0<<CLKPS2) | (0<<CLKPS1) | (0<<CLKPS0);
+  //CLKPR=(1<<CLKPCE);
+  //CLKPR=(0<<CLKPCE) | (0<<CLKPS3) | (0<<CLKPS2) | (0<<CLKPS1) | (0<<CLKPS0);
 
   // Input/Output Ports initialization
   // Port B initialization
@@ -337,32 +324,17 @@ int main(void)
   //PORTB = 0x1A;
   //DDRB = 0x01;
 
-#ifdef SLOW_PWM
   // Timer/Counter 0 initialization
   // Clock source: System Clock
-  // Clock value: 37,500 kHz
+  // Clock value: 1200,000 kHz
   // Mode: Fast PWM top=0xFF
   // OC0A output: Non-Inverted PWM
   // OC0B output: Disconnected
-  // Timer Period: 6,8267 ms
+  // Timer Period: 0,21333 ms
   // Output Pulse(s):
-  // OC0A Period: 6,8267 ms Width: 0 us
-  TCCR0A=(0<<COM0A1) | (0<<COM0A0) | (0<<COM0B1) | (0<<COM0B0) | (1<<WGM01) | (1<<WGM00);
-  TCCR0B=(0<<WGM02) | (1<<CS02) | (0<<CS01) | (0<<CS00);
-  //TCCR0A = 0x03;
-  //TCCR0B = 0x04;
-#else
-  // Timer/Counter 0 initialization
-  // Clock source: System Clock
-  // Clock value: 9600,000 kHz
-  // Mode: Fast PWM top=FFh
-  // OC0A output: Non-Inverted PWM
-  // OC0B output: Disconnected
-  TCCR0A=(0<<COM0A1) | (0<<COM0A0) | (0<<COM0B1) | (0<<COM0B0) | (1<<WGM01) | (1<<WGM00);
+  // OC0A Period: 0,21333 ms Width: 0 us
+  TCCR0A=(1<<COM0A1) | (0<<COM0A0) | (0<<COM0B1) | (0<<COM0B0) | (1<<WGM01) | (1<<WGM00);
   TCCR0B=(0<<WGM02) | (0<<CS02) | (0<<CS01) | (1<<CS00);
-  //TCCR0A = 0x03;
-  //TCCR0B = 0x01;
-#endif
   //TCNT0=0x00;
   //OCR0A=0x00;
   //OCR0B=0x00;
@@ -374,8 +346,9 @@ int main(void)
   //GIMSK = 0x20;
 
   //Sleep enabled. Power-down mod
-  MCUCR=(1<<SE) | (1<<SM1) | (0<<ISC01) | (0<<ISC00);
-  //MCUCR = 0x30; 
+  //MCUCR=(1<<SE) | (1<<SM1) | (0<<ISC01) | (0<<ISC00);
+  //MCUCR = 0x30;
+  set_sleep_mode(SLEEP_MODE_PWR_DOWN); 
 
   //Pin Change interupt on PIN.1, PIN.4
   PCMSK = (1<<PCINT4) | (1<<PCINT1);
@@ -411,14 +384,13 @@ int main(void)
 
   // Global enable interrupts
   sei();
-
-  while (1)
-  {
+  
+  do {
     // Place your code here
     if (GoToSleep)
     {
       sei();
-      sleep_cpu();
+      sleep_mode();
     }
-  };
+  } while (1);
 }
