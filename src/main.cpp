@@ -1,24 +1,8 @@
-/*****************************************************
-This program was produced by the
-CodeWizardAVR V1.25.9 Professional
-Automatic Program Generator
-© Copyright 1998-2008 Pavel Haiduc, HP InfoTech s.r.l.
-http://www.hpinfotech.com
-
-Project : 
-Version : 
-Date    : 17.03.2010
-Author  : hardlock
-Company : Hardlock Company
-Comments: 
-
-
-Chip type           : ATtiny13
-Clock frequency     : 1,200000 MHz
-Memory model        : Tiny
-External SRAM size  : 0            
-Data Stack size     : 16
-*****************************************************/
+/*
+*
+* original code by hardlock
+*
+*/
 
 //#include <tiny13a.h>
 #include <avr/io.h>
@@ -26,6 +10,10 @@ Data Stack size     : 16
 #include <util/delay.h>
 #include <avr/eeprom.h>
 #include <avr/sleep.h>
+#include <wdt.h>
+
+// use watchdog
+#define USE_WATCHDOG
 
 #define U12V 0xDC
 /*
@@ -74,13 +62,19 @@ typedef enum
 EEMEM unsigned char eeMultU = 1;
 EEMEM unsigned char eeOnTime5s = 2;
 
-tModeInfo mode;
+tModeInfo mode, setupMode;
 
 unsigned char counter;
 unsigned int counter2;
-unsigned char SafeShutdown;
 
+unsigned char SafeShutdown;
 volatile unsigned char GoToSleep;
+
+unsigned char blinker = 0;
+unsigned char max_blink = 0;
+
+unsigned char buttonPressed = 0;
+
 
 // Read the AD conversion result
 int read_adc(unsigned char adc_input)
@@ -122,13 +116,6 @@ ISR(PCINT0_vect)
   }
 }
 
-unsigned char blinker = 0;
-unsigned char max_blink = 0;
-
-tModeInfo setupMode;
-
-unsigned char buttonPressed = 0;
-
 void blink(unsigned int delay)
 {
   if (++counter2 < delay)
@@ -155,13 +142,14 @@ ISR(TIM0_OVF_vect)
 {
   // Place your code here
 
-#ifdef FASTER_SOFT_OFF_VOLTAGE_THRESHOLD
-  if (counter++ < (mode == MODE_SOFT_OFF ? (voltageThreshold ? DELAY_TIMER_MODE_OFF >> 1 : DELAY_TIMER_MODE_OFF) : DELAY_TIMER_NORMAL))
-#else
-  if (counter++ < (mode == MODE_SOFT_OFF ? DELAY_TIMER_MODE_OFF : DELAY_TIMER_NORMAL))
-#endif
+  if (--counter > 0)
     return;
-  counter = 0;
+
+  counter = DELAY_TIMER_NORMAL;
+
+#ifdef USE_WATCHDOG
+  wdt_reset();
+#endif
 
   if (BUTTON)
   {
@@ -310,6 +298,13 @@ ISR(TIM0_OVF_vect)
       mode = MODE_STANDBY;
       SafeShutdown = 0;
     }
+
+#ifdef FASTER_SOFT_OFF_VOLTAGE_THRESHOLD   
+    counter = (voltageThreshold ? DELAY_TIMER_MODE_OFF >> 1 : DELAY_TIMER_MODE_OFF);
+#else    
+    counter = DELAY_TIMER_MODE_OFF;
+#endif
+
     break;
   }
 }
@@ -328,8 +323,8 @@ int main(void)
   // Port B initialization
   // Func5=In Func4=In Func3=In Func2=In Func1=In Func0=Out
   DDRB=(0<<DDB5) | (0<<DDB4) | (0<<DDB3) | (0<<DDB2) | (0<<DDB1) | (1<<DDB0);
-  // State5=T State4=P State3=P State2=T State1=P State0=0
-  PORTB=(0<<PORTB5) | (1<<PORTB4) | (1<<PORTB3) | (0<<PORTB2) | (1<<PORTB1) | (0<<PORTB0);
+  // State5=T State4=P State3=T State2=T State1=P State0=0
+  PORTB=(0<<PORTB5) | (1<<PORTB4) | (0<<PORTB3) | (0<<PORTB2) | (1<<PORTB1) | (0<<PORTB0);
   
   // Timer/Counter 0 initialization
   // Clock source: System Clock
@@ -367,22 +362,40 @@ int main(void)
   DIDR0 = (0<<ADC0D) | (1<<ADC1D) | (0<<ADC2D) | (0<<ADC3D) | (0<<AIN1D) | (0<<AIN0D);
   
   mode = MODE_STANDBY;
-  //if (!DOOR_CLOSED)
-  //  mode = MODE_SOFT_START;
-  //GoToSleep = 1;
-  //SafeShutdown = 0;
 
-  // Global enable interrupts
-  sei();
-  
+#ifdef USE_WATCHDOG
+  _wdt_enable(_BV(WDE), WDTO_250MS);
+#endif  
+
   do {
+   
+    // Global enable interrupts
+    sei();
+
     // Place your code here
     if (GoToSleep)
     {
-      sei();
+#ifdef USE_WATCHDOG
+      _wdt_enable(_BV(WDTIE), WDTO_4S);
+#endif
       // disable ADC
       ADCSRA = (0<<ADEN);
-      sleep_mode();
+      sei();
+      while (GoToSleep) {
+        sleep_mode();
+        WDTCR |= _BV(WDTIE);
+      }
+#ifdef USE_WATCHDOG
+      _wdt_enable(_BV(WDE), WDTO_250MS);
+#endif      
     }
   } while (1);
 }
+
+#ifdef USE_WATCHDOG
+ISR (WDT_vect, ISR_NAKED) {
+  // clear output
+  PORTB &= ~_BV(PB0);
+  reti();
+}
+#endif
