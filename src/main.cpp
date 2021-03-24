@@ -27,7 +27,6 @@ Data Stack size     : 16
 #include <avr/eeprom.h>
 #include <avr/sleep.h>
 
-#define ADC_VREF_TYPE 0x00
 #define U12V 0xDC
 /*
 12.5 = 0x00DF // 223
@@ -38,22 +37,28 @@ Data Stack size     : 16
 
 // default pwm frequency is (1,2MHz / 255 (Top Timer0) = 4,7khz
 // 0,0002133s timer overflow
+#define TIMER_RESOLUTION 0.0002133
 
-#define DELAY_TIMER_NORMAL 47          // 47 * 0,0002133 = 0.01003s timer ; on time = 0.01003 * 255 = 2,56 sec
-#define DELAY_TIMER_MODE_OFF 125       // off time = 125 * 0.01003 * 255 = 6,8 sec
-#define DELAY_OFF_IF_DOOR_IS_OPEN 60000 // * 0.01003 sek = 10min
-#define DELAY_ON_TIME 500               // * 0.01003 = 5 sec
-#define DELAY_BLINKER 25                // * 0.01003 = 0,25 sec
-#define DELAY_BLINKER_PAUSE 300         // * 0.01003 = 3 sec
-#define DELAY_BUTTON_PRESSED 100        // * 0.01003 = 1 sec
+#define DELAY_TIMER_NORMAL        (int) (3.0 / 255.0 / TIMER_RESOLUTION)                // 3 sec on time
+#define DELAY_TIMER_MODE_OFF      (int) (6.0 / 255.0 / TIMER_RESOLUTION)                // 6 sec off time
 
-// soft on time when voltage threshold reached is 127 * timer (or 255 * timer when not defined)
-#define FASTER_SOFT_ON_VOLTAGE_THRESHOLD
-// soft off time when voltage threshold reached is timer * DELAY_TIMER_NORMAL (or timer * DELAY_TIMER_MODE_OFF when not defined)
+#define DELAY_OFF_IF_DOOR_IS_OPEN (int) (600.0 / DELAY_TIMER_NORMAL / TIMER_RESOLUTION) // 10 min delay before off
+#define DELAY_ON_TIME             (int) (5.0 / DELAY_TIMER_NORMAL / TIMER_RESOLUTION)   // 5 sec delay
+#define DELAY_BLINKER             (int) (0.25 / DELAY_TIMER_NORMAL / TIMER_RESOLUTION)  // 0,25 sec blink
+#define DELAY_BLINKER_PAUSE       (int) (3.0 / DELAY_TIMER_NORMAL / TIMER_RESOLUTION)   // 3 sec blink pause
+#define DELAY_BUTTON_PRESSED      (int) (1.0 / DELAY_TIMER_NORMAL / TIMER_RESOLUTION)   // 1 sec button pressed
+
+// two times faster soft on when voltage threshold reached
+//#define FASTER_SOFT_ON_VOLTAGE_THRESHOLD
+// two times faster soft off when voltage threshold reached
 #define FASTER_SOFT_OFF_VOLTAGE_THRESHOLD
 
-#define BUTTON (!(PINB & _BV(PB4)))   //кнопка
-#define DOOR_CLOSED (PINB & _BV(PB1)) //концевик двери
+//кнопка
+#define BUTTON (!(PINB & _BV(PB4)))
+//концевик двери
+#define DOOR_CLOSED (PINB & _BV(PB1))
+//вход измерения напряжения (PB2)
+#define V_IN (0<<MUX1) | (1<<MUX0)
 
 typedef enum
 {
@@ -80,15 +85,19 @@ volatile unsigned char GoToSleep;
 // Read the AD conversion result
 int read_adc(unsigned char adc_input)
 {
-  ADMUX = adc_input | (ADC_VREF_TYPE & 0xff);
+  ADMUX = adc_input | (0<<REFS0);
+  
   // Delay needed for the stabilization of the ADC input voltage
   _delay_us(10);
-  // Start the AD conversion
-  ADCSRA |= 0x40;
+  
+  // Enable ADC and start the AD conversion
+  ADCSRA = (1<<ADEN) | (1<<ADSC);
+  
   // Wait for the AD conversion to complete
-  while ((ADCSRA & 0x10) == 0)
-    ;
-  ADCSRA |= 0x10;
+  while ((ADCSRA & (1<<ADIF)) == 0);
+
+  ADCSRA |= (1<<ADIF);
+
   return ADCW;
 }
 
@@ -147,7 +156,7 @@ ISR(TIM0_OVF_vect)
   // Place your code here
 
 #ifdef FASTER_SOFT_OFF_VOLTAGE_THRESHOLD
-  if (counter++ < ((mode == MODE_SOFT_OFF && !voltageThreshold) ? DELAY_TIMER_MODE_OFF : DELAY_TIMER_NORMAL))
+  if (counter++ < (mode == MODE_SOFT_OFF ? (voltageThreshold ? DELAY_TIMER_MODE_OFF >> 1 : DELAY_TIMER_MODE_OFF) : DELAY_TIMER_NORMAL))
 #else
   if (counter++ < (mode == MODE_SOFT_OFF ? DELAY_TIMER_MODE_OFF : DELAY_TIMER_NORMAL))
 #endif
@@ -179,7 +188,7 @@ ISR(TIM0_OVF_vect)
   }
 
   // переход к гашению, если дверь закрыта, напряжение больше порога паузы
-  voltageThreshold = read_adc(1) > U12V + eeprom_read_byte(&eeMultU) * 5;
+  voltageThreshold = read_adc(V_IN) > U12V + eeprom_read_byte(&eeMultU) * 5;
 
   // и находимся в режимах MODE_ON, MODE_SOFT_START, MODE_WAIT_BEFORE_OFF
   if ((mode == MODE_ON || mode == MODE_SOFT_START || mode == MODE_WAIT_BEFORE_OFF) && DOOR_CLOSED && voltageThreshold)
@@ -321,9 +330,7 @@ int main(void)
   DDRB=(0<<DDB5) | (0<<DDB4) | (0<<DDB3) | (0<<DDB2) | (0<<DDB1) | (1<<DDB0);
   // State5=T State4=P State3=P State2=T State1=P State0=0
   PORTB=(0<<PORTB5) | (1<<PORTB4) | (1<<PORTB3) | (0<<PORTB2) | (1<<PORTB1) | (0<<PORTB0);
-  //PORTB = 0x1A;
-  //DDRB = 0x01;
-
+  
   // Timer/Counter 0 initialization
   // Clock source: System Clock
   // Clock value: 1200,000 kHz
@@ -335,47 +342,30 @@ int main(void)
   // OC0A Period: 0,21333 ms Width: 0 us
   TCCR0A=(1<<COM0A1) | (0<<COM0A0) | (0<<COM0B1) | (0<<COM0B0) | (1<<WGM01) | (1<<WGM00);
   TCCR0B=(0<<WGM02) | (0<<CS02) | (0<<CS01) | (1<<CS00);
-  //TCNT0=0x00;
-  //OCR0A=0x00;
-  //OCR0B=0x00;
-
+  
   // External Interrupt(s) initialization
   // INT0: Off
   // Interrupt on any change on pins PCINT0-5: On
   GIMSK=(0<<INT0) | (1<<PCIE);
-  //GIMSK = 0x20;
-
+  
   //Sleep enabled. Power-down mod
-  //MCUCR=(1<<SE) | (1<<SM1) | (0<<ISC01) | (0<<ISC00);
-  //MCUCR = 0x30;
   set_sleep_mode(SLEEP_MODE_PWR_DOWN); 
 
   //Pin Change interupt on PIN.1, PIN.4
   PCMSK = (1<<PCINT4) | (1<<PCINT1);
-  //PCMSK = 0x12; 
   
   GIFR = (1<<PCIF);
-  //GIFR = 0x20;
-
+  
   // Timer/Counter 0 Interrupt(s) initialization
   TIMSK0=(0<<OCIE0B) | (0<<OCIE0A) | (1<<TOIE0);
-  //TIMSK0 = 0x02;
-
+  
   // Analog Comparator initialization
   // Analog Comparator: Off
-  ACSR = 0x80;
-  //ADCSRB=0x00;
-
-  // ADC initialization
-  // ADC Clock frequency: 600,000 kHz
-  // ADC Bandgap Voltage Reference: Off
-  // ADC Auto Trigger Source: None
-  // Digital input buffers on ADC0: On, ADC1: On, ADC2: On, ADC3: On
-  DIDR0 &= 0x03;
-  DIDR0 |= 0x00;
-  ADMUX = ADC_VREF_TYPE & 0xff;
-  ADCSRA = 0x84;
-
+  ACSR = (1<<ACD);
+  
+  // Digital input buffers on ADC0: On, ADC1: Off, ADC2: On, ADC3: On
+  DIDR0 = (0<<ADC0D) | (1<<ADC1D) | (0<<ADC2D) | (0<<ADC3D) | (0<<AIN1D) | (0<<AIN0D);
+  
   mode = MODE_STANDBY;
   //if (!DOOR_CLOSED)
   //  mode = MODE_SOFT_START;
@@ -390,6 +380,8 @@ int main(void)
     if (GoToSleep)
     {
       sei();
+      // disable ADC
+      ADCSRA = (0<<ADEN);
       sleep_mode();
     }
   } while (1);
